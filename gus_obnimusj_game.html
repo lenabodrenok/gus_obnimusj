@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Гусь Обнимусь</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+html, body { width:100%; height:100%; overflow:hidden; background:#1b5e20; }
+
+#wrapper {
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  width:100%; height:100%;
+}
+
+h1 { color:#c8e6c9; font-size:18px; font-family:monospace; letter-spacing:2px; margin-bottom:8px; }
+
+#canvasWrap { position:relative; width:100%; max-width:640px; }
+canvas { display:block; width:100%; height:auto; border-radius:10px; border:2px solid #4a7c4e; }
+
+#ui {
+  display:flex; gap:16px; margin-top:8px;
+  font-size:13px; color:#c8e6c9; font-family:monospace;
+}
+#hint { margin-top:4px; font-size:11px; color:#81c784; font-family:monospace; text-align:center; }
+
+/* Touch controls — only on touch devices */
+#touchControls {
+  display:none;
+  width:100%; max-width:640px;
+  margin-top:10px;
+  justify-content:space-between;
+  align-items:center;
+  padding:0 8px;
+}
+@media (pointer: coarse) {
+  #touchControls { display:flex; }
+  #hint { display:none; }
+}
+
+.dpad { display:flex; gap:6px; }
+.btn {
+  width:64px; height:64px;
+  background:rgba(255,255,255,0.18);
+  border:2px solid rgba(255,255,255,0.35);
+  border-radius:14px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:26px; color:#fff;
+  user-select:none; cursor:pointer;
+  transition: background 0.1s;
+}
+.btn:active, .btn.pressed { background:rgba(255,255,255,0.38); }
+.btn-jump {
+  width:72px; height:72px;
+  border-radius:50%;
+  background:rgba(255,255,255,0.22);
+  font-size:28px;
+}
+</style>
+</head>
+<body>
+<div id="wrapper">
+  <h1>🦢 ГУСЬ ОБНИМУСЬ</h1>
+  <div id="canvasWrap">
+    <canvas id="gc" width="640" height="300"></canvas>
+  </div>
+  <div id="ui">
+    <span>Мух съедено: <b id="sc">0</b></span>
+    <span>Волна: <b id="wv">1</b></span>
+    <span id="mg" style="color:#a5d6a7;font-weight:500;"></span>
+  </div>
+  <div id="hint">← → = идти &nbsp;|&nbsp; ↑ = прыжок &nbsp;|&nbsp; Enter = старт</div>
+
+  <div id="touchControls">
+    <div class="dpad">
+      <div class="btn" id="btnLeft">←</div>
+      <div class="btn" id="btnRight">→</div>
+    </div>
+    <div class="btn btn-jump" id="btnJump">↑</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var cv=document.getElementById('gc');
+  var cx=cv.getContext('2d');
+  var W=640,H=300;
+  var GY=H-68;
+
+  var running=false,won=false,over=false;
+  var wave=1,totalEaten=0,lives=3;
+  var flies=[],wasps=[],particles=[];
+  var keys={};
+  var stingCooldown=0;
+
+  var BX=430,BW=100,BH=70;
+  var ROOF_H=36,ROOF_BOT_W=BW+12,ROOF_TOP_W=40;
+  var ROOF_BOT_Y,ROOF_TOP_Y,BGY;
+
+  function initBarn(){
+    BGY=GY+40+4; ROOF_BOT_Y=BGY-BH; ROOF_TOP_Y=ROOF_BOT_Y-ROOF_H;
+  }
+
+  var g={
+    x:W/2-16,y:GY,w:32,h:40,vy:0,onGnd:true,dir:1,moving:false,tick:0,
+    rst:function(){this.x=W/2-16;this.y=GY;this.vy=0;this.onGnd=true;this.dir=1;this.moving=false;this.tick=0;}
+  };
+
+  // Touch button state
+  var touch={left:false,right:false,jump:false,jumpConsumed:false};
+
+  function setupTouch(){
+    function holdBtn(id, key){
+      var el=document.getElementById(id);
+      if(!el) return;
+      el.addEventListener('touchstart',function(e){e.preventDefault();touch[key]=true;el.classList.add('pressed');},{ passive:false });
+      el.addEventListener('touchend',function(e){e.preventDefault();touch[key]=false;el.classList.remove('pressed');},{ passive:false });
+      el.addEventListener('touchcancel',function(){touch[key]=false;el.classList.remove('pressed');});
+    }
+    holdBtn('btnLeft','left');
+    holdBtn('btnRight','right');
+    // Jump: fire once per tap
+    var jb=document.getElementById('btnJump');
+    if(jb){
+      jb.addEventListener('touchstart',function(e){
+        e.preventDefault();
+        if(!running||over||won){ startGame(); return; }
+        g.jump();
+        jb.classList.add('pressed');
+      },{ passive:false });
+      jb.addEventListener('touchend',function(e){e.preventDefault();jb.classList.remove('pressed');},{ passive:false });
+    }
+    // Tap canvas to start
+    cv.addEventListener('touchstart',function(e){
+      if(!running||over||won){ e.preventDefault(); startGame(); }
+    },{ passive:false });
+  }
+
+  function makeFly(){
+    var gx=g.x+g.w/2,gy=g.y+g.h/2;
+    var r=80+Math.random()*110,a=Math.random()*Math.PI*2;
+    return{x:Math.max(40,Math.min(W-40,gx+Math.cos(a)*r)),y:Math.max(30,Math.min(GY-5,gy+Math.sin(a)*r)),vx:(Math.random()-.5)*1.5,vy:(Math.random()-.5)*1.1,wingTick:0,alive:true,type:'fly'};
+  }
+  function makeWasp(){
+    var gx=g.x+g.w/2,gy=g.y+g.h/2;
+    var r=120+Math.random()*100,a=Math.random()*Math.PI*2;
+    return{x:Math.max(40,Math.min(W-40,gx+Math.cos(a)*r)),y:Math.max(30,Math.min(GY-5,gy+Math.sin(a)*r)),vx:(Math.random()-.5)*0.9,vy:(Math.random()-.5)*0.7,wingTick:0,alive:true,type:'wasp'};
+  }
+  function spawnWave(n){
+    flies=[];wasps=[];
+    for(var i=0;i<n;i++) flies.push(makeFly());
+    if(n>=4){var wc=n-3;for(var j=0;j<wc;j++) wasps.push(makeWasp());}
+  }
+  function addParticle(x,y,col){
+    for(var i=0;i<6;i++){var a=Math.random()*Math.PI*2,sp=1+Math.random()*2;particles.push({x:x,y:y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:30,col:col||'#ffcc00'});}
+  }
+
+  function drawHearts(){
+    var hx=W-14,hy=14;
+    for(var i=0;i<3;i++){
+      cx.fillStyle=i<lives?'#e53935':'#555';
+      var ox=hx-i*18,oy=hy;
+      cx.fillRect(ox-4,oy-2,3,2);cx.fillRect(ox+1,oy-2,3,2);
+      cx.fillRect(ox-5,oy,8,2);cx.fillRect(ox-1,oy,6,2);
+      cx.fillRect(ox-4,oy+2,9,2);cx.fillRect(ox-3,oy+4,7,2);
+      cx.fillRect(ox-2,oy+6,5,2);cx.fillRect(ox-1,oy+8,3,2);cx.fillRect(ox,oy+10,1,2);
+    }
+  }
+
+  function drawBg(){
+    cx.fillStyle='#c8e6c9';cx.fillRect(0,0,W,H);
+    function cloud(x,y,s){cx.fillStyle='#e8f5e9';cx.fillRect(x,y,s*2.2,s*0.7);cx.fillRect(x+s*0.3,y-s*0.4,s*1.4,s*0.7);cx.fillRect(x+s*0.8,y-s*0.6,s,s*0.6);}
+    cloud(55,32,40);cloud(220,20,50);cloud(460,42,36);cloud(345,26,44);
+    var gy=GY+g.h+4;
+    cx.fillStyle='#388e3c';cx.fillRect(0,gy-4,W,H-(gy-4));
+    cx.fillStyle='#2e7d32';cx.fillRect(0,gy-4,W,4);
+    cx.fillStyle='#1b5e20';for(var i=0;i<W;i+=32)cx.fillRect(i+4,gy-7,4,7);
+    var bgy2=gy-4,rby=bgy2-BH,rty=rby-ROOF_H,bcx2=BX+BW/2;
+    cx.fillStyle='#8d3b0a';cx.fillRect(BX,rby,BW,BH);
+    cx.fillStyle='#7a3209';cx.fillRect(BX,rby,6,BH);cx.fillRect(BX+BW-6,rby,6,BH);
+    cx.fillStyle='#5a2206';cx.fillRect(BX+BW/2-10,bgy2-30,20,30);
+    cx.beginPath();cx.arc(BX+BW/2,bgy2-30,10,Math.PI,0);cx.fillStyle='#5a2206';cx.fill();
+    cx.fillStyle='#d4a96a';cx.fillRect(BX+10,rby+10,16,14);
+    cx.fillStyle='#b8860b';cx.fillRect(BX+16,rby+10,2,14);cx.fillRect(BX+10,rby+16,16,2);
+    cx.fillStyle='#c0392b';
+    cx.beginPath();cx.moveTo(bcx2-ROOF_BOT_W/2,rby);cx.lineTo(bcx2+ROOF_BOT_W/2,rby);cx.lineTo(bcx2+ROOF_TOP_W/2,rty);cx.lineTo(bcx2-ROOF_TOP_W/2,rty);cx.closePath();cx.fill();
+    cx.fillStyle='#a93226';cx.beginPath();cx.moveTo(bcx2,rty);cx.lineTo(bcx2+ROOF_BOT_W/2,rby);cx.lineTo(bcx2+ROOF_TOP_W/2,rty);cx.closePath();cx.fill();
+    cx.fillStyle='#7b241c';cx.fillRect(bcx2-ROOF_TOP_W/2,rty,ROOF_TOP_W,3);
+    function bush(bx2){cx.fillStyle='#2e7d32';cx.fillRect(bx2,gy-26,44,26);cx.fillRect(bx2+8,gy-36,28,14);cx.fillRect(bx2+14,gy-44,16,12);cx.fillStyle='#43a047';cx.fillRect(bx2+4,gy-28,8,8);cx.fillRect(bx2+20,gy-34,8,8);}
+    bush(560);bush(62);
+    function flower(fx,fy,col){cx.fillStyle='#388e3c';cx.fillRect(fx,fy-16,2,16);cx.fillStyle=col;cx.fillRect(fx-4,fy-22,4,4);cx.fillRect(fx+2,fy-22,4,4);cx.fillRect(fx-1,fy-25,4,4);cx.fillRect(fx-1,fy-19,4,4);cx.fillStyle='#ffd600';cx.fillRect(fx-1,fy-23,4,4);}
+    flower(114,gy-4,'#e91e63');flower(128,gy-4,'#ff9800');flower(142,gy-2,'#9c27b0');
+  }
+
+  function drawGoose(){
+    var p=4,bx=Math.round(g.x),by=Math.round(g.y)+g.h,legA=Math.floor(g.tick/12)%2===0;
+    cx.save();
+    if(g.dir===-1){cx.translate(bx+g.w,0);cx.scale(-1,1);bx=0;}
+    function dr(col,gx2,gy2,gw,gh){cx.fillStyle=col;cx.fillRect(bx+gx2*p,by-gh*p+gy2*p,gw*p,gh*p);}
+    dr('#fff',1,5,7,5);dr('#e8e8e8',2,6,5,3);dr('#fff',6,2,2,3);dr('#ccc',2,5,4,2);
+    dr('#fff',5,0,4,3);dr('#ff8f00',9,1,2,1);dr('#222',7,0,1,1);
+    if(g.moving||!g.onGnd){
+      if(legA){dr('#ff8f00',2,9,1,3);dr('#ff8f00',5,9,1,1);dr('#ff8f00',0,11,3,1);dr('#ff8f00',5,10,3,1);}
+      else{dr('#ff8f00',2,9,1,1);dr('#ff8f00',5,9,1,3);dr('#ff8f00',2,10,3,1);dr('#ff8f00',4,11,3,1);}
+    } else {
+      dr('#ff8f00',2,9,1,3);dr('#ff8f00',5,9,1,3);dr('#ff8f00',0,11,3,1);dr('#ff8f00',5,11,3,1);
+    }
+    cx.restore();
+  }
+
+  function drawInsect(f){
+    if(!f.alive)return;
+    var x=Math.round(f.x),y=Math.round(f.y);f.wingTick++;var wf=Math.sin(f.wingTick*0.5)>0;
+    if(f.type==='wasp'){
+      cx.fillStyle='#f9a825';cx.fillRect(x-4,y-2,8,5);cx.fillStyle='#212121';cx.fillRect(x-3,y-1,2,3);cx.fillRect(x,y-1,2,3);cx.fillRect(x+2,y-1,1,3);
+      cx.fillStyle='#f9a825';cx.fillRect(x+3,y-3,4,4);cx.fillStyle='#212121';cx.fillRect(x+4,y-3,2,2);cx.fillStyle='#e65100';cx.fillRect(x-6,y,2,2);
+      cx.fillStyle='rgba(220,240,180,0.85)';
+      if(wf){cx.fillRect(x-5,y-8,6,4);cx.fillRect(x+2,y-8,6,4);}else{cx.fillRect(x-4,y-5,5,3);cx.fillRect(x+2,y-5,5,3);}
+    } else {
+      cx.fillStyle='#222';cx.fillRect(x-3,y-2,6,4);cx.fillStyle='#333';cx.fillRect(x+2,y-3,4,4);cx.fillStyle='#88cc00';cx.fillRect(x+3,y-3,2,2);
+      cx.fillStyle='rgba(200,230,200,0.85)';
+      if(wf){cx.fillRect(x-8,y-7,8,4);cx.fillRect(x+3,y-7,8,4);}else{cx.fillRect(x-6,y-4,6,3);cx.fillRect(x+3,y-4,6,3);}
+      cx.fillStyle='#555';cx.fillRect(x-2,y+2,1,3);cx.fillRect(x+1,y+2,1,3);cx.fillRect(x+3,y+2,1,3);
+    }
+  }
+
+  function drawParticles(){
+    for(var i=0;i<particles.length;i++){var p2=particles[i];cx.globalAlpha=p2.life/30;cx.fillStyle=p2.col;cx.fillRect(p2.x-2,p2.y-2,4,4);}
+    cx.globalAlpha=1;
+  }
+
+  function updateInsect(f,speed){
+    if(!f.alive)return;
+    f.vx+=(Math.random()-.5)*0.3;f.vy+=(Math.random()-.5)*0.2;
+    var dx=g.x+g.w/2-f.x,dy=g.y+g.h/2-f.y,dist=Math.sqrt(dx*dx+dy*dy);
+    var pd=f.type==='wasp'?180:200,ps=f.type==='wasp'?0.08:0.15;
+    if(dist>pd){f.vx+=dx/dist*ps;f.vy+=dy/dist*ps;}
+    var spd=Math.sqrt(f.vx*f.vx+f.vy*f.vy);if(spd>speed){f.vx=f.vx/spd*speed;f.vy=f.vy/spd*speed;}
+    f.x+=f.vx;f.y+=f.vy;
+    if(f.x<20){f.x=20;f.vx=Math.abs(f.vx);}if(f.x>W-20){f.x=W-20;f.vx=-Math.abs(f.vx);}
+    if(f.y<20){f.y=20;f.vy=Math.abs(f.vy);}if(f.y>GY+g.h-6){f.y=GY+g.h-6;f.vy=-Math.abs(f.vy);}
+  }
+
+  function updateInsects(){
+    var hbx=g.x+2,hby=g.y,hbw=g.w-4,hbh=g.h;
+    if(stingCooldown>0)stingCooldown--;
+    for(var i=0;i<flies.length;i++){
+      var f=flies[i];if(!f.alive)continue;updateInsect(f,1.8);
+      if(f.x>hbx&&f.x<hbx+hbw&&f.y>hby&&f.y<hby+hbh){f.alive=false;addParticle(f.x,f.y,'#ffcc00');totalEaten++;document.getElementById('sc').textContent=totalEaten;checkWave();}
+    }
+    for(var j=0;j<wasps.length;j++){
+      var w=wasps[j];if(!w.alive)continue;updateInsect(w,1.0);
+      if(stingCooldown===0&&w.x>hbx&&w.x<hbx+hbw&&w.y>hby&&w.y<hby+hbh){
+        stingCooldown=90;addParticle(w.x,w.y,'#ff6600');lives--;
+        if(lives<=0){over=true;document.getElementById('mg').textContent='💀 Гуся ужалили!';}
+        w.vx=-w.vx*2;w.vy=-w.vy*2;
+      }
+    }
+  }
+
+  function checkWave(){
+    if(flies.every(function(f){return !f.alive;})){
+      if(wave>=10){won=true;document.getElementById('mg').textContent='🎉 Победа!';return;}
+      wave++;document.getElementById('wv').textContent=wave;spawnWave(wave);
+    }
+  }
+
+  function updateGoose(){
+    g.moving=false;
+    var goLeft  = keys['ArrowLeft'] ||keys['KeyA']||touch.left;
+    var goRight = keys['ArrowRight']||keys['KeyD']||touch.right;
+    if(goRight){g.x+=2.2;g.dir=1;g.moving=true;}
+    if(goLeft) {g.x-=2.2;g.dir=-1;g.moving=true;}
+    if((keys['ArrowUp']||keys['KeyW'])&&g.onGnd){g.vy=-13;g.onGnd=false;}
+    g.vy+=0.55;g.y+=g.vy;
+    if(g.y>=GY){g.y=GY;g.vy=0;g.onGnd=true;}
+    var bcx2=BX+BW/2,rty=ROOF_BOT_Y-ROOF_H,rtLeft=bcx2-ROOF_TOP_W/2,rtRight=bcx2+ROOF_TOP_W/2;
+    if(g.vy>=0&&g.x+g.w-4>rtLeft&&g.x+4<rtRight&&g.y+g.h>=rty&&g.y+g.h<=rty+14){g.y=rty-g.h;g.vy=0;g.onGnd=true;}
+    if(g.x<10)g.x=10;if(g.x+g.w>W-10)g.x=W-10-g.w;
+    if(g.moving||!g.onGnd)g.tick++;
+  }
+
+  function updateParticles(){
+    for(var i=particles.length-1;i>=0;i--){var p2=particles[i];p2.x+=p2.vx;p2.y+=p2.vy;p2.life--;if(p2.life<=0)particles.splice(i,1);}
+  }
+
+  function overlay(lines, sizes){
+    cx.fillStyle='rgba(0,0,0,0.28)';cx.fillRect(0,0,W,H);
+    cx.textAlign='center';
+    var y=H/2-20*(lines.length-1)/2;
+    for(var i=0;i<lines.length;i++){cx.fillStyle='#fff';cx.font=(sizes[i]||16)+'px monospace';cx.fillText(lines[i],W/2,y);y+=sizes[i]+10;}
+    cx.textAlign='left';
+  }
+
+  function draw(){
+    cx.clearRect(0,0,W,H);drawBg();drawParticles();
+    flies.forEach(drawInsect);wasps.forEach(drawInsect);
+    drawGoose();drawHearts();
+    if(!running&&!won&&!over) overlay(['🦢 ГУСЬ ОБНИМУСЬ','Лови мух, уворачивайся от ос!','Нажми Enter или тапни'],[24,15,13]);
+    if(won) overlay(['🎉 ПОБЕДА!','Гусь съел всех '+totalEaten+' мух!','Enter или тап — снова'],[26,16,13]);
+    if(over&&!won) overlay(['💀 Гуся ужалили!','Съедено мух: '+totalEaten,'Enter или тап — снова'],[22,15,13]);
+  }
+
+  function loop(){
+    if(running&&!won&&!over){updateGoose();updateInsects();updateParticles();}
+    draw();requestAnimationFrame(loop);
+  }
+
+  function startGame(){
+    running=true;won=false;over=false;wave=1;totalEaten=0;lives=3;stingCooldown=0;
+    g.rst();particles=[];
+    document.getElementById('sc').textContent=0;
+    document.getElementById('wv').textContent=1;
+    document.getElementById('mg').textContent='';
+    initBarn();spawnWave(1);
+  }
+
+  document.addEventListener('keydown',function(e){
+    keys[e.code]=true;
+    if(e.code==='Enter')startGame();
+    if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].indexOf(e.code)>=0)e.preventDefault();
+  });
+  document.addEventListener('keyup',function(e){keys[e.code]=false;});
+
+  setupTouch();
+  initBarn();loop();
+})();
+</script>
+</body>
+</html>

@@ -10,55 +10,27 @@
 <style>
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
 html, body { width:100%; height:100%; overflow:hidden; background:#1b5e20; }
-
-#wrapper {
-  display:flex; flex-direction:column; align-items:center; justify-content:center;
-  width:100%; height:100%;
-}
-
+#wrapper { display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; height:100%; }
 h1 { color:#c8e6c9; font-size:18px; font-family:monospace; letter-spacing:2px; margin-bottom:8px; }
-
 #canvasWrap { position:relative; width:100%; max-width:640px; }
-canvas { display:block; width:100%; height:auto; border-radius:10px; border:2px solid #4a7c4e; }
-
-#ui {
-  display:flex; gap:16px; margin-top:8px;
-  font-size:13px; color:#c8e6c9; font-family:monospace;
-}
+canvas { display:block; width:100%; height:auto; border-radius:10px; border:2px solid #4a7c4e; touch-action:none; }
+#ui { display:flex; gap:16px; margin-top:8px; font-size:13px; color:#c8e6c9; font-family:monospace; }
 #hint { margin-top:4px; font-size:11px; color:#81c784; font-family:monospace; text-align:center; }
-
-/* Touch controls — only on touch devices */
-#touchControls {
-  display:none;
-  width:100%; max-width:640px;
-  margin-top:10px;
-  justify-content:space-between;
-  align-items:center;
-  padding:0 8px;
-}
-@media (pointer: coarse) {
-  #touchControls { display:flex; }
-  #hint { display:none; }
-}
-
+#touchControls { display:none; width:100%; max-width:640px; margin-top:10px; justify-content:space-between; align-items:center; padding:0 8px; }
+@media (pointer: coarse) { #touchControls { display:flex; } #hint { display:none; } }
 .dpad { display:flex; gap:6px; }
 .btn {
-  width:64px; height:64px;
-  background:rgba(255,255,255,0.18);
-  border:2px solid rgba(255,255,255,0.35);
+  width:70px; height:70px;
+  background:rgba(255,255,255,0.2);
+  border:2px solid rgba(255,255,255,0.4);
   border-radius:14px;
   display:flex; align-items:center; justify-content:center;
-  font-size:26px; color:#fff;
+  font-size:28px; color:#fff;
   user-select:none; cursor:pointer;
-  transition: background 0.1s;
+  touch-action:none;
 }
-.btn:active, .btn.pressed { background:rgba(255,255,255,0.38); }
-.btn-jump {
-  width:72px; height:72px;
-  border-radius:50%;
-  background:rgba(255,255,255,0.22);
-  font-size:28px;
-}
+.btn.pressed { background:rgba(255,255,255,0.42); }
+.btn-jump { width:76px; height:76px; border-radius:50%; background:rgba(255,255,255,0.25); font-size:30px; }
 </style>
 </head>
 <body>
@@ -73,7 +45,6 @@ canvas { display:block; width:100%; height:auto; border-radius:10px; border:2px 
     <span id="mg" style="color:#a5d6a7;font-weight:500;"></span>
   </div>
   <div id="hint">← → = идти &nbsp;|&nbsp; ↑ = прыжок &nbsp;|&nbsp; Enter = старт</div>
-
   <div id="touchControls">
     <div class="dpad">
       <div class="btn" id="btnLeft">←</div>
@@ -87,66 +58,61 @@ canvas { display:block; width:100%; height:auto; border-radius:10px; border:2px 
 (function(){
   var cv=document.getElementById('gc');
   var cx=cv.getContext('2d');
-  var W=640,H=300;
-  var GY=H-68;
-
+  var W=640,H=300,GY=H-68;
   var running=false,won=false,over=false;
   var wave=1,totalEaten=0,lives=3;
   var flies=[],wasps=[],particles=[];
   var keys={};
   var stingCooldown=0;
-
-  var BX=430,BW=100,BH=70;
-  var ROOF_H=36,ROOF_BOT_W=BW+12,ROOF_TOP_W=40;
+  var BX=430,BW=100,BH=70,ROOF_H=36,ROOF_BOT_W=BW+12,ROOF_TOP_W=40;
   var ROOF_BOT_Y,ROOF_TOP_Y,BGY;
 
-  function initBarn(){
-    BGY=GY+40+4; ROOF_BOT_Y=BGY-BH; ROOF_TOP_Y=ROOF_BOT_Y-ROOF_H;
-  }
+  // Touch state — simple booleans
+  var tLeft=false, tRight=false;
+
+  function initBarn(){ BGY=GY+40+4; ROOF_BOT_Y=BGY-BH; ROOF_TOP_Y=ROOF_BOT_Y-ROOF_H; }
 
   var g={
     x:W/2-16,y:GY,w:32,h:40,vy:0,onGnd:true,dir:1,moving:false,tick:0,
-    rst:function(){this.x=W/2-16;this.y=GY;this.vy=0;this.onGnd=true;this.dir=1;this.moving=false;this.tick=0;}
+    rst:function(){ this.x=W/2-16;this.y=GY;this.vy=0;this.onGnd=true;this.dir=1;this.moving=false;this.tick=0; },
+    jump:function(){ if(this.onGnd&&!over&&!won){ this.vy=-13; this.onGnd=false; } }
   };
 
-  // Touch button state
-  var touch={left:false,right:false,jump:false,jumpConsumed:false};
-
   function setupTouch(){
-    function holdBtn(id, key){
-      var el=document.getElementById(id);
-      if(!el) return;
-      el.addEventListener('touchstart',function(e){e.preventDefault();touch[key]=true;el.classList.add('pressed');},{ passive:false });
-      el.addEventListener('touchend',function(e){e.preventDefault();touch[key]=false;el.classList.remove('pressed');},{ passive:false });
-      el.addEventListener('touchcancel',function(){touch[key]=false;el.classList.remove('pressed');});
-    }
-    holdBtn('btnLeft','left');
-    holdBtn('btnRight','right');
-    // Jump: fire once per tap
-    var jb=document.getElementById('btnJump');
-    if(jb){
-      jb.addEventListener('touchstart',function(e){
-        e.preventDefault();
-        if(!running||over||won){ startGame(); return; }
-        g.jump();
-        jb.classList.add('pressed');
-      },{ passive:false });
-      jb.addEventListener('touchend',function(e){e.preventDefault();jb.classList.remove('pressed');},{ passive:false });
-    }
+    // Left button — hold
+    var bl=document.getElementById('btnLeft');
+    bl.addEventListener('touchstart',function(e){e.preventDefault();tLeft=true;bl.classList.add('pressed');},{passive:false});
+    bl.addEventListener('touchend',function(e){e.preventDefault();tLeft=false;bl.classList.remove('pressed');},{passive:false});
+    bl.addEventListener('touchcancel',function(){tLeft=false;bl.classList.remove('pressed');});
+
+    // Right button — hold
+    var br=document.getElementById('btnRight');
+    br.addEventListener('touchstart',function(e){e.preventDefault();tRight=true;br.classList.add('pressed');},{passive:false});
+    br.addEventListener('touchend',function(e){e.preventDefault();tRight=false;br.classList.remove('pressed');},{passive:false});
+    br.addEventListener('touchcancel',function(){tRight=false;br.classList.remove('pressed');});
+
+    // Jump button — fire on touchstart
+    var bj=document.getElementById('btnJump');
+    bj.addEventListener('touchstart',function(e){
+      e.preventDefault();
+      bj.classList.add('pressed');
+      if(!running||over||won){ startGame(); return; }
+      g.jump();
+    },{passive:false});
+    bj.addEventListener('touchend',function(e){e.preventDefault();bj.classList.remove('pressed');},{passive:false});
+
     // Tap canvas to start
     cv.addEventListener('touchstart',function(e){
       if(!running||over||won){ e.preventDefault(); startGame(); }
-    },{ passive:false });
+    },{passive:false});
   }
 
   function makeFly(){
-    var gx=g.x+g.w/2,gy=g.y+g.h/2;
-    var r=80+Math.random()*110,a=Math.random()*Math.PI*2;
+    var gx=g.x+g.w/2,gy=g.y+g.h/2,r=80+Math.random()*110,a=Math.random()*Math.PI*2;
     return{x:Math.max(40,Math.min(W-40,gx+Math.cos(a)*r)),y:Math.max(30,Math.min(GY-5,gy+Math.sin(a)*r)),vx:(Math.random()-.5)*1.5,vy:(Math.random()-.5)*1.1,wingTick:0,alive:true,type:'fly'};
   }
   function makeWasp(){
-    var gx=g.x+g.w/2,gy=g.y+g.h/2;
-    var r=120+Math.random()*100,a=Math.random()*Math.PI*2;
+    var gx=g.x+g.w/2,gy=g.y+g.h/2,r=120+Math.random()*100,a=Math.random()*Math.PI*2;
     return{x:Math.max(40,Math.min(W-40,gx+Math.cos(a)*r)),y:Math.max(30,Math.min(GY-5,gy+Math.sin(a)*r)),vx:(Math.random()-.5)*0.9,vy:(Math.random()-.5)*0.7,wingTick:0,alive:true,type:'wasp'};
   }
   function spawnWave(n){
@@ -270,11 +236,10 @@ canvas { display:block; width:100%; height:auto; border-radius:10px; border:2px 
 
   function updateGoose(){
     g.moving=false;
-    var goLeft  = keys['ArrowLeft'] ||keys['KeyA']||touch.left;
-    var goRight = keys['ArrowRight']||keys['KeyD']||touch.right;
-    if(goRight){g.x+=2.2;g.dir=1;g.moving=true;}
-    if(goLeft) {g.x-=2.2;g.dir=-1;g.moving=true;}
-    if((keys['ArrowUp']||keys['KeyW'])&&g.onGnd){g.vy=-13;g.onGnd=false;}
+    var spd = 3.5; // faster movement
+    if(keys['ArrowRight']||keys['KeyD']||tRight){g.x+=spd;g.dir=1;g.moving=true;}
+    if(keys['ArrowLeft'] ||keys['KeyA']||tLeft) {g.x-=spd;g.dir=-1;g.moving=true;}
+    if((keys['ArrowUp']||keys['KeyW'])&&g.onGnd){g.jump();}
     g.vy+=0.55;g.y+=g.vy;
     if(g.y>=GY){g.y=GY;g.vy=0;g.onGnd=true;}
     var bcx2=BX+BW/2,rty=ROOF_BOT_Y-ROOF_H,rtLeft=bcx2-ROOF_TOP_W/2,rtRight=bcx2+ROOF_TOP_W/2;
@@ -287,11 +252,11 @@ canvas { display:block; width:100%; height:auto; border-radius:10px; border:2px 
     for(var i=particles.length-1;i>=0;i--){var p2=particles[i];p2.x+=p2.vx;p2.y+=p2.vy;p2.life--;if(p2.life<=0)particles.splice(i,1);}
   }
 
-  function overlay(lines, sizes){
+  function overlay(lines,sizes){
     cx.fillStyle='rgba(0,0,0,0.28)';cx.fillRect(0,0,W,H);
     cx.textAlign='center';
-    var y=H/2-20*(lines.length-1)/2;
-    for(var i=0;i<lines.length;i++){cx.fillStyle='#fff';cx.font=(sizes[i]||16)+'px monospace';cx.fillText(lines[i],W/2,y);y+=sizes[i]+10;}
+    var y=H/2-lines.length*16;
+    for(var i=0;i<lines.length;i++){cx.fillStyle='#fff';cx.font=(sizes[i]||16)+'px monospace';cx.fillText(lines[i],W/2,y);y+=sizes[i]+12;}
     cx.textAlign='left';
   }
 
@@ -299,7 +264,7 @@ canvas { display:block; width:100%; height:auto; border-radius:10px; border:2px 
     cx.clearRect(0,0,W,H);drawBg();drawParticles();
     flies.forEach(drawInsect);wasps.forEach(drawInsect);
     drawGoose();drawHearts();
-    if(!running&&!won&&!over) overlay(['🦢 ГУСЬ ОБНИМУСЬ','Лови мух, уворачивайся от ос!','Нажми Enter или тапни'],[24,15,13]);
+    if(!running&&!won&&!over) overlay(['🦢 ГУСЬ ОБНИМУСЬ','Лови мух, уворачивайся от ос!','Enter или тап — начать'],[24,15,13]);
     if(won) overlay(['🎉 ПОБЕДА!','Гусь съел всех '+totalEaten+' мух!','Enter или тап — снова'],[26,16,13]);
     if(over&&!won) overlay(['💀 Гуся ужалили!','Съедено мух: '+totalEaten,'Enter или тап — снова'],[22,15,13]);
   }
@@ -311,7 +276,7 @@ canvas { display:block; width:100%; height:auto; border-radius:10px; border:2px 
 
   function startGame(){
     running=true;won=false;over=false;wave=1;totalEaten=0;lives=3;stingCooldown=0;
-    g.rst();particles=[];
+    g.rst();particles=[];tLeft=false;tRight=false;
     document.getElementById('sc').textContent=0;
     document.getElementById('wv').textContent=1;
     document.getElementById('mg').textContent='';
@@ -326,7 +291,8 @@ canvas { display:block; width:100%; height:auto; border-radius:10px; border:2px 
   document.addEventListener('keyup',function(e){keys[e.code]=false;});
 
   setupTouch();
-  initBarn();loop();
+  initBarn();
+  loop();
 })();
 </script>
 </body>
